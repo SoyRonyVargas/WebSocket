@@ -34,3 +34,4 @@ C:\Users\soyro\source\repos\WebApplication1\WebApplication1\obj\Debug\net8.0\Web
 C:\Users\soyro\source\repos\WebApplication1\WebApplication1\obj\Debug\net8.0\WebApplication1.genruntimeconfig.cache
 C:\Users\soyro\source\repos\WebApplication1\WebApplication1\obj\Debug\net8.0\ref\WebApplication1.dll
 C:\Users\soyro\source\repos\WebApplication1\WebApplication1\obj\Debug\net8.0\staticwebassets.upToDateCheck.txt
+C:\Users\soyro\source\repos\WebApplication1\WebApplication1\obj\Debug\net8.0\WebApplication1.sourcelink.json
