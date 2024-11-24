@@ -83,6 +83,8 @@ static async Task SendMessage(WebSocket socket, string message)
 async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> activeSockets)
 {
     var buffer = new byte[1024 * 4];
+    using var memoryStream = new MemoryStream(); // Acumulará los datos binarios completos.
+
     try
     {
         while (webSocket.State == WebSocketState.Open)
@@ -97,32 +99,41 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
             else if (result.MessageType == WebSocketMessageType.Binary)
             {
                 Console.WriteLine("Recibiendo archivo...");
-                var fileData = new byte[result.Count];
-                Array.Copy(buffer, fileData, result.Count);
 
-                // Intentar detectar el tipo de archivo
-                var fileExtension = GetFileExtension(fileData); // Obtener la extensión del archivo
-                if (fileExtension == null)
+                // Agregar los datos recibidos al MemoryStream
+                memoryStream.Write(buffer, 0, result.Count);
+
+                // Si este es el último fragmento del archivo
+                if (result.EndOfMessage)
                 {
-                    await SendMessage(webSocket, "No se pudo detectar el tipo de archivo.");
-                    return;
+                    var fileData = memoryStream.ToArray(); // Convertir a un array completo de bytes.
+                    memoryStream.SetLength(0); // Reiniciar el MemoryStream para próximos archivos.
+
+                    // Intentar detectar el tipo de archivo
+                    var fileExtension = GetFileExtension(fileData); // Obtener la extensión del archivo
+                    if (fileExtension == null)
+                    {
+                        await SendMessage(webSocket, "No se pudo detectar el tipo de archivo.");
+                        return;
+                    }
+
+                    // Generar un nombre único para el archivo
+                    var fileName = $"file_{Guid.NewGuid()}{fileExtension}";
+                    var filePath = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles", fileName);
+
+                    var fileDirectory = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles");
+                    if (!Directory.Exists(fileDirectory))
+                    {
+                        Directory.CreateDirectory(fileDirectory);
+                    }
+
+                    // Guardar el archivo en el sistema
+                    await File.WriteAllBytesAsync(filePath, fileData);
+                    uploadedFiles.Add(fileName);
+
+                    Console.WriteLine($"Archivo guardado como {fileName}");
+                    await SendMessage(webSocket, $"Archivo {fileName} recibido y guardado.");
                 }
-
-                // Generar un nombre único para el archivo
-                var fileName = $"file_{Guid.NewGuid()}{fileExtension}";
-                var filePath = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles", fileName);
-
-                var fileDirectory = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles");
-                if (!Directory.Exists(fileDirectory))
-                {
-                    Directory.CreateDirectory(fileDirectory);
-                }
-
-                await File.WriteAllBytesAsync(filePath, fileData);
-                uploadedFiles.Add(fileName);
-
-                Console.WriteLine($"Archivo guardado como {fileName}");
-                await SendMessage(webSocket, $"Archivo {fileName} recibido y guardado.");
             }
             else if (result.MessageType == WebSocketMessageType.Close)
             {
