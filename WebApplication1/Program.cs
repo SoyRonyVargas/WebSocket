@@ -1,8 +1,10 @@
+using Microsoft.Extensions.FileProviders;
 using System.Net.WebSockets;
 using System.Text;
 using System.Collections.Concurrent;
 using System.IO;
 using System;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,6 +14,19 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles");
+if (!Directory.Exists(uploadsPath))
+{
+    Directory.CreateDirectory(uploadsPath);
+}
+
+// Middleware para servir la carpeta "UploadedFiles" como pública
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadsPath),
+    RequestPath = "/uploads" // Ruta pública
+});
 
 app.UseCors(builder =>
     builder.AllowAnyOrigin()
@@ -46,7 +61,7 @@ app.MapGet("/ws", async context =>
 
         await SendMessage(webSocket, $"{isReady}");
 
-        await HandleWebSocketAsync(webSocket, activeSockets);
+        await HandleWebSocketAsync(webSocket, activeSockets, context);
     }
     else
     {
@@ -70,17 +85,40 @@ app.MapPost("/toggle-flag", async context =>
     await context.Response.WriteAsync("Flag toggled!");
 });
 
+app.MapGet("/", async context =>
+{
+    await context.Response.WriteAsync("Hello World");
+});
+
+app.MapGet("/download/{fileName}", async (HttpContext context, string fileName) =>
+{
+    var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles");
+    var filePath = Path.Combine(uploadsPath, fileName);
+
+    if (!File.Exists(filePath))
+    {
+        context.Response.StatusCode = 404;
+        await context.Response.WriteAsync("Archivo no encontrado.");
+        return;
+    }
+
+    context.Response.ContentType = "application/octet-stream";
+    context.Response.Headers.Add("Content-Disposition", $"attachment; filename=\"{fileName}\"");
+
+    await context.Response.SendFileAsync(filePath);
+});
+
 app.MapControllers();
 
 app.Run();
 
-static async Task SendMessage(WebSocket socket, string message)
+static async Task SendMessage(WebSocket socket, string message )
 {
     var buffer = Encoding.UTF8.GetBytes(message);
     await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
 }
 
-async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> activeSockets)
+async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> activeSockets, HttpContext context)
 {
     var buffer = new byte[1024 * 4];
     using var memoryStream = new MemoryStream(); // Acumulará los datos binarios completos.
@@ -119,20 +157,32 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
 
                     // Generar un nombre único para el archivo
                     var fileName = $"file_{Guid.NewGuid()}{fileExtension}";
-                    var filePath = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles", fileName);
+                    var filePath = Path.Combine(uploadsPath, fileName);
 
-                    var fileDirectory = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFiles");
-                    if (!Directory.Exists(fileDirectory))
-                    {
-                        Directory.CreateDirectory(fileDirectory);
-                    }
-
-                    // Guardar el archivo en el sistema
                     await File.WriteAllBytesAsync(filePath, fileData);
                     uploadedFiles.Add(fileName);
 
-                    Console.WriteLine($"Archivo guardado como {fileName}");
-                    await SendMessage(webSocket, $"Archivo {fileName} recibido y guardado.");
+                    // Generar la URL pública
+                    var fileUrl = $"{context.Request.Scheme}://{context.Request.Host}/download/{fileName}";
+
+                    // Notificar al usuario que envió el archivo
+                    await SendMessage(webSocket, $"Archivo {fileName} recibido y guardado. URL: {fileUrl}");
+
+                    // Notificar a todos los usuarios conectados
+                    //var notificationMessage = $"Un nuevo archivo ha sido subido: {fileName}. URL: {fileUrl}";
+                    var notificationMessage = $"{fileUrl}";
+                    foreach (var socket in activeSockets)
+                    {
+                        //Debugger.Break();
+                        if (socket.State == WebSocketState.Open)
+                        {
+                            await SendMessage(socket, notificationMessage);
+                        }
+                        else
+                        {
+                            await SendMessage(socket, "Este no es xddd");
+                        }
+                    }
                 }
             }
             else if (result.MessageType == WebSocketMessageType.Close)
@@ -148,8 +198,8 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
     }
     finally
     {
-        activeSockets.TryTake(out _);
-        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Cierre normal", CancellationToken.None);
+        //activeSockets.TryTake(out _);
+        //await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Cierre normal", CancellationToken.None);
     }
 }
 
