@@ -44,11 +44,12 @@ app.UseAuthorization();
 
 var webSocketOptions = new WebSocketOptions
 {
-    KeepAliveInterval = TimeSpan.FromSeconds(120)
+    KeepAliveInterval = TimeSpan.FromSeconds(1200)
 };
 app.UseWebSockets(webSocketOptions);
 
-var activeSockets = new ConcurrentBag<WebSocket>();
+// Cambiado a ConcurrentDictionary
+var activeSockets = new ConcurrentDictionary<Guid, WebSocket>();
 bool isReady = false;
 var uploadedFiles = new List<string>();
 
@@ -57,11 +58,12 @@ app.MapGet("/ws", async context =>
     if (context.WebSockets.IsWebSocketRequest)
     {
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        activeSockets.Add(webSocket);
+        var socketId = Guid.NewGuid();
+        activeSockets.TryAdd(socketId, webSocket);
 
         await SendMessage(webSocket, $"{isReady}");
 
-        await HandleWebSocketAsync(webSocket, activeSockets, context);
+        await HandleWebSocketAsync(socketId, webSocket, activeSockets, context);
     }
     else
     {
@@ -73,8 +75,9 @@ app.MapPost("/toggle-flag", async context =>
 {
     isReady = !isReady;
 
-    foreach (var socket in activeSockets)
+    foreach (var kvp in activeSockets)
     {
+        var socket = kvp.Value;
         if (socket.State == WebSocketState.Open)
         {
             await SendMessage(socket, $"{isReady}");
@@ -112,13 +115,13 @@ app.MapControllers();
 
 app.Run();
 
-static async Task SendMessage(WebSocket socket, string message )
+static async Task SendMessage(WebSocket socket, string message)
 {
     var buffer = Encoding.UTF8.GetBytes(message);
     await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
 }
 
-async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> activeSockets, HttpContext context)
+async Task HandleWebSocketAsync(Guid socketId, WebSocket webSocket, ConcurrentDictionary<Guid, WebSocket> activeSockets, HttpContext context)
 {
     var buffer = new byte[1024 * 4];
     using var memoryStream = new MemoryStream(); // Acumulará los datos binarios completos.
@@ -147,40 +150,31 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
                     var fileData = memoryStream.ToArray(); // Convertir a un array completo de bytes.
                     memoryStream.SetLength(0); // Reiniciar el MemoryStream para próximos archivos.
 
-                    // Intentar detectar el tipo de archivo
-                    var fileExtension = GetFileExtension(fileData); // Obtener la extensión del archivo
+                    var fileExtension = GetFileExtension(fileData);
                     if (fileExtension == null)
                     {
                         await SendMessage(webSocket, "No se pudo detectar el tipo de archivo.");
                         return;
                     }
 
-                    // Generar un nombre único para el archivo
                     var fileName = $"file_{Guid.NewGuid()}{fileExtension}";
                     var filePath = Path.Combine(uploadsPath, fileName);
 
                     await File.WriteAllBytesAsync(filePath, fileData);
                     uploadedFiles.Add(fileName);
 
-                    // Generar la URL pública
                     var fileUrl = $"{context.Request.Scheme}://{context.Request.Host}/download/{fileName}";
 
-                    // Notificar al usuario que envió el archivo
-                    await SendMessage(webSocket, $"Archivo {fileName} recibido y guardado. URL: {fileUrl}");
-
-                    // Notificar a todos los usuarios conectados
-                    //var notificationMessage = $"Un nuevo archivo ha sido subido: {fileName}. URL: {fileUrl}";
                     var notificationMessage = $"{fileUrl}";
-                    foreach (var socket in activeSockets)
+
+                    await SendMessage(webSocket, $"{fileUrl}");
+
+                    foreach (var kvp in activeSockets)
                     {
-                        //Debugger.Break();
+                        var socket = kvp.Value;
                         if (socket.State == WebSocketState.Open)
                         {
                             await SendMessage(socket, notificationMessage);
-                        }
-                        else
-                        {
-                            await SendMessage(socket, "Este no es xddd");
                         }
                     }
                 }
@@ -190,6 +184,10 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
                 Console.WriteLine("Cliente desconectado.");
                 break;
             }
+            if (!result.EndOfMessage && result.Count == 0)
+            {
+                await SendMessage(webSocket, "Manteniendo conexión activa...");
+            }
         }
     }
     catch (Exception ex)
@@ -198,33 +196,16 @@ async Task HandleWebSocketAsync(WebSocket webSocket, ConcurrentBag<WebSocket> ac
     }
     finally
     {
-        //activeSockets.TryTake(out _);
+        //activeSockets.TryRemove(socketId, out _);
         //await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Cierre normal", CancellationToken.None);
     }
 }
 
-// Método para intentar detectar el tipo de archivo basado en los primeros bytes
 string GetFileExtension(byte[] fileData)
 {
-
-    // Verifica los primeros bytes para detectar los tipos más comunes
-    if (fileData[0] == 137 && fileData[1] == 80 && fileData[2] == 78 && fileData[3] == 71)
-    {
-        return ".png";  // PNG
-    }
-    if (fileData[0] == 255 && fileData[1] == 216 && fileData[2] == 255)
-    {
-        return ".jpg";  // JPEG
-    }
-    if (fileData[0] == 37 && fileData[1] == 80 && fileData[2] == 68 && fileData[3] == 70)
-    {
-        return ".pdf";  // PDF
-    }
-    if (fileData[0] == 80 && fileData[1] == 75 && fileData[2] == 3 && fileData[3] == 4)
-    {
-        return ".zip";  // ZIP
-    }
-
-    // Si no se detecta, devuelve null (puedes agregar más tipos según sea necesario)
+    if (fileData[0] == 137 && fileData[1] == 80 && fileData[2] == 78 && fileData[3] == 71) return ".png";
+    if (fileData[0] == 255 && fileData[1] == 216 && fileData[2] == 255) return ".jpg";
+    if (fileData[0] == 37 && fileData[1] == 80 && fileData[2] == 68 && fileData[3] == 70) return ".pdf";
+    if (fileData[0] == 80 && fileData[1] == 75 && fileData[2] == 3 && fileData[3] == 4) return ".zip";
     return null;
 }
